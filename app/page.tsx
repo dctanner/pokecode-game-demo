@@ -1,8 +1,9 @@
 'use client';
 
-import { Activity, Mic, MicOff, PhoneCall, PhoneOff, User } from 'lucide-react';
+import { Activity, Mic, MicOff, PhoneOff, Volume2, VolumeX } from 'lucide-react';
 import dynamic from 'next/dynamic';
-import { useCallback, useEffect, useRef, useState, type ComponentType } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import type { NPC } from './game/npcs';
 
 type Role = 'user' | 'assistant' | 'system';
 
@@ -27,30 +28,21 @@ type AgentEvent = {
   content?: string;
 };
 
-const SpeakingIndicator = ({ label, isActive, icon: Icon }: { label: string; isActive: boolean; icon: ComponentType<{ className?: string }> }) => (
-  <div
-    className={`flex items-center gap-2 rounded-md border px-3 py-2 text-sm transition-colors ${
-      isActive ? 'border-emerald-500/60 bg-emerald-500/10 text-white' : 'border-neutral-800 bg-neutral-900/40 text-neutral-400'
-    }`}
-  >
-    <Icon className={`h-4 w-4 ${isActive ? 'text-emerald-300' : 'text-neutral-500'}`} />
-    <span>{label}</span>
-    <span className={`ml-auto inline-flex h-2 w-2 rounded-full ${isActive ? 'animate-pulse bg-emerald-300' : 'bg-neutral-700'}`} aria-hidden />
-  </div>
-);
-
-const Page = dynamic(
+const GamePage = dynamic(
   async () => {
     const { useLayercodeAgent, MicrophoneSelect } = await import('@layercode/react-sdk');
+    const { GameWorld } = await import('./game/GameWorld');
 
-    function VoiceAgentDemo() {
+    function Game() {
       const agentId = process.env.NEXT_PUBLIC_LAYERCODE_AGENT_ID ?? '';
 
       const [messages, setMessages] = useState<Message[]>([]);
       const [isSessionActive, setIsSessionActive] = useState(false);
       const [error, setError] = useState<string | null>(null);
+      const [selectedNpc, setSelectedNpc] = useState<NPC | null>(null);
       const userChunksByTurn = useRef<TurnChunkMap>(new Map());
       const listRef = useRef<HTMLDivElement | null>(null);
+      const npcIdRef = useRef<string | null>(null);
 
       const appendSystemMessage = useCallback((text: string) => {
         setMessages((prev) => [...prev, { role: 'system', text }]);
@@ -157,15 +149,20 @@ const Page = dynamic(
       const agent = useLayercodeAgent({
         agentId,
         authorizeSessionEndpoint: '/api/authorize',
+        authorizeSessionRequestBody: {
+          npc_id: npcIdRef.current || 'elder_oak'
+        },
         enableAmplitudeMonitoring: false,
         onConnect: () => {
           setIsSessionActive(true);
-          appendSystemMessage('Connected');
+          if (selectedNpc) {
+            appendSystemMessage(`Connected to ${selectedNpc.name}`);
+          }
         },
         onDisconnect: () => {
           setIsSessionActive(false);
           userChunksByTurn.current.clear();
-          appendSystemMessage('Disconnected');
+          appendSystemMessage('Conversation ended');
         },
         onError: (err) => {
           const errorMessage = err instanceof Error ? err.message : String(err);
@@ -196,21 +193,29 @@ const Page = dynamic(
       }, [messages]);
 
       const isConnecting = status === 'connecting';
-      const canConnect = !isSessionActive && !isConnecting;
-      const connectLabel = isConnecting ? 'Connecting…' : 'Connect';
 
-      const handleConnectClick = async () => {
-        if (!canConnect) return;
-        userChunksByTurn.current.clear();
+      const handleNpcInteract = useCallback(async (npc: NPC) => {
+        if (isSessionActive || isConnecting) return;
+
+        setSelectedNpc(npc);
+        npcIdRef.current = npc.id;
         setMessages([]);
         setError(null);
+        userChunksByTurn.current.clear();
+
         try {
           await connect();
         } catch (error) {
           const errorMessage = error instanceof Error ? error.message : String(error);
           setMessages([{ role: 'system', text: `Failed to connect: ${errorMessage}` }]);
         }
-      };
+      }, [isSessionActive, isConnecting, connect]);
+
+      const handleDisconnect = useCallback(() => {
+        disconnect();
+        setSelectedNpc(null);
+        npcIdRef.current = null;
+      }, [disconnect]);
 
       const handleMicClick = () => {
         if (!isSessionActive) return;
@@ -218,116 +223,187 @@ const Page = dynamic(
       };
 
       const getRoleLabel = (role: Role) => {
-        switch (role) {
-          case 'assistant':
-            return 'Agent';
-          case 'user':
-            return 'You';
-          default:
-            return 'System';
+        if (role === 'assistant') {
+          return selectedNpc?.name ?? 'NPC';
         }
+        return role === 'user' ? 'You' : 'System';
       };
 
       return (
-        <div className="mx-auto max-w-3xl space-y-6 p-6">
-          {error && (
-            <div className="flex items-center justify-between rounded-lg border border-red-500/50 bg-red-500/10 px-4 py-3 text-sm text-red-200">
-              <span>{error}</span>
-              <button
-                type="button"
-                onClick={() => setError(null)}
-                className="ml-4 text-red-300 hover:text-red-100"
-                aria-label="Dismiss error"
-              >
-                &times;
-              </button>
-            </div>
-          )}
-          <section className="space-y-6 rounded-xl border border-neutral-800 bg-black/30 p-5">
-            <div className="flex flex-col gap-3 sm:flex-row">
-              <button
-                type="button"
-                onClick={isSessionActive ? disconnect : handleConnectClick}
-                disabled={isConnecting}
-                className="flex flex-1 items-center justify-center gap-2 rounded-md border border-neutral-700 bg-neutral-900/50 px-4 py-2 text-white transition hover:border-neutral-500 disabled:opacity-50"
-              >
-                {isSessionActive ? (
-                  <>
-                    <PhoneOff className="h-4 w-4 text-rose-400" />
-                    <span>Disconnect</span>
-                  </>
-                ) : (
-                  <>
-                    <PhoneCall className="h-4 w-4 text-emerald-400" />
-                    <span>{connectLabel}</span>
-                  </>
-                )}
-              </button>
+        <div className="min-h-screen bg-neutral-950 text-white p-4 md:p-8">
+          <div className="max-w-6xl mx-auto">
+            {/* Header */}
+            <header className="mb-6 text-center">
+              <h1 className="text-3xl font-bold text-emerald-400 mb-2">Village of Voices</h1>
+              <p className="text-neutral-400">Walk around and talk to the villagers using your voice!</p>
+            </header>
 
-              <button
-                type="button"
-                onClick={handleMicClick}
-                disabled={!isSessionActive}
-                className="flex flex-1 items-center justify-center gap-2 rounded-md border border-neutral-700 bg-neutral-900/50 px-4 py-2 text-white transition hover:border-neutral-500 disabled:opacity-50"
-              >
-                {isMuted ? (
-                  <>
-                    <MicOff className="h-4 w-4 text-rose-400" />
-                    <span>Mic muted</span>
-                  </>
-                ) : (
-                  <>
-                    <Mic className="h-4 w-4 text-emerald-400" />
-                    <span>Mic on</span>
-                  </>
-                )}
-              </button>
-            </div>
+            {error && (
+              <div className="mb-4 flex items-center justify-between rounded-lg border border-red-500/50 bg-red-500/10 px-4 py-3 text-sm text-red-200">
+                <span>{error}</span>
+                <button
+                  type="button"
+                  onClick={() => setError(null)}
+                  className="ml-4 text-red-300 hover:text-red-100"
+                  aria-label="Dismiss error"
+                >
+                  &times;
+                </button>
+              </div>
+            )}
 
-            <div className="grid gap-3 sm:grid-cols-2">
-              <SpeakingIndicator label="You" isActive={userSpeaking} icon={User} />
-              <SpeakingIndicator label="Agent speaking" isActive={agentSpeaking} icon={Activity} />
-            </div>
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+              {/* Game World */}
+              <section className="rounded-xl border border-neutral-800 bg-black/30 p-5">
+                <h2 className="text-lg font-semibold mb-4 text-neutral-200">Game World</h2>
+                <div className="flex justify-center">
+                  <GameWorld
+                    onNpcInteract={handleNpcInteract}
+                    selectedNpcId={selectedNpc?.id ?? null}
+                    isConnected={isSessionActive}
+                  />
+                </div>
+              </section>
 
-            <MicrophoneSelect
-              agent={agent}
-              helperText="Pick an input before connecting."
-              className="w-full rounded-md border border-neutral-800 bg-neutral-950/60 px-3 py-2 text-sm text-white focus:outline-none focus:ring-2 focus:ring-emerald-500/60"
-              containerClassName="space-y-2"
-            />
-
-            <div className="text-sm text-neutral-400">
-              Session status: <span className="text-white capitalize">{status}</span>
-            </div>
-          </section>
-
-          <section className="rounded-xl border border-neutral-800 bg-black/30 p-5">
-            <div className="mb-3 flex items-center justify-between text-sm text-neutral-400">
-              <span>Conversation</span>
-            </div>
-
-            <div ref={listRef} className="h-80 w-full overflow-y-auto rounded-md border border-neutral-900 bg-neutral-950/40 p-3 text-sm">
-              {messages.length === 0 ? (
-                <div className="text-neutral-500">No messages yet. Start a session to see the live transcript.</div>
-              ) : (
-                messages.map((message, index) => (
-                  <div key={`${message.turnId ?? message.role}-${index}`} className="mb-3 leading-relaxed">
-                    <span className="text-sm font-medium text-neutral-400">{getRoleLabel(message.role)}:</span>{' '}
-                    <span className="whitespace-pre-wrap text-neutral-100">
-                      {message.role === 'user' && message.chunks?.length ? message.chunks.map((chunk) => <span key={chunk.counter}>{chunk.text}</span>) : message.text}
-                    </span>
+              {/* Chat Panel */}
+              <section className="rounded-xl border border-neutral-800 bg-black/30 p-5 flex flex-col">
+                {/* NPC Info */}
+                {selectedNpc ? (
+                  <div className="mb-4 p-3 rounded-lg border border-neutral-700 bg-neutral-900/50">
+                    <div className="flex items-center gap-3">
+                      <div
+                        className="w-10 h-10 rounded-full flex items-center justify-center text-white font-bold"
+                        style={{ backgroundColor: selectedNpc.color }}
+                      >
+                        {selectedNpc.name[0]}
+                      </div>
+                      <div>
+                        <h3 className="font-semibold text-white">{selectedNpc.name}</h3>
+                        <p className="text-xs text-neutral-400 capitalize">{selectedNpc.personality}</p>
+                      </div>
+                      {isSessionActive && (
+                        <div className="ml-auto flex items-center gap-2">
+                          <span className="flex h-2 w-2 rounded-full bg-emerald-400 animate-pulse" />
+                          <span className="text-xs text-emerald-400">Connected</span>
+                        </div>
+                      )}
+                    </div>
                   </div>
-                ))
-              )}
+                ) : (
+                  <div className="mb-4 p-4 rounded-lg border border-dashed border-neutral-700 bg-neutral-900/30 text-center">
+                    <p className="text-neutral-500">Walk up to a villager and press SPACE to start a conversation</p>
+                  </div>
+                )}
+
+                {/* Voice Controls */}
+                {isSessionActive && (
+                  <div className="mb-4 space-y-3">
+                    <div className="flex gap-2">
+                      <button
+                        type="button"
+                        onClick={handleDisconnect}
+                        className="flex flex-1 items-center justify-center gap-2 rounded-md border border-red-700 bg-red-900/30 px-4 py-2 text-white transition hover:bg-red-900/50"
+                      >
+                        <PhoneOff className="h-4 w-4 text-red-400" />
+                        <span>End Chat</span>
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={handleMicClick}
+                        className="flex flex-1 items-center justify-center gap-2 rounded-md border border-neutral-700 bg-neutral-900/50 px-4 py-2 text-white transition hover:border-neutral-500"
+                      >
+                        {isMuted ? (
+                          <>
+                            <MicOff className="h-4 w-4 text-red-400" />
+                            <span>Unmute</span>
+                          </>
+                        ) : (
+                          <>
+                            <Mic className="h-4 w-4 text-emerald-400" />
+                            <span>Mute</span>
+                          </>
+                        )}
+                      </button>
+                    </div>
+
+                    {/* Speaking indicators */}
+                    <div className="grid grid-cols-2 gap-2">
+                      <div className={`flex items-center gap-2 rounded-md border px-3 py-2 text-sm transition-colors ${
+                        userSpeaking ? 'border-emerald-500/60 bg-emerald-500/10 text-white' : 'border-neutral-800 bg-neutral-900/40 text-neutral-400'
+                      }`}>
+                        <Mic className={`h-4 w-4 ${userSpeaking ? 'text-emerald-300' : 'text-neutral-500'}`} />
+                        <span>You</span>
+                        <span className={`ml-auto inline-flex h-2 w-2 rounded-full ${userSpeaking ? 'animate-pulse bg-emerald-300' : 'bg-neutral-700'}`} />
+                      </div>
+                      <div className={`flex items-center gap-2 rounded-md border px-3 py-2 text-sm transition-colors ${
+                        agentSpeaking ? 'border-emerald-500/60 bg-emerald-500/10 text-white' : 'border-neutral-800 bg-neutral-900/40 text-neutral-400'
+                      }`}>
+                        <Activity className={`h-4 w-4 ${agentSpeaking ? 'text-emerald-300' : 'text-neutral-500'}`} />
+                        <span>{selectedNpc?.name ?? 'NPC'}</span>
+                        <span className={`ml-auto inline-flex h-2 w-2 rounded-full ${agentSpeaking ? 'animate-pulse bg-emerald-300' : 'bg-neutral-700'}`} />
+                      </div>
+                    </div>
+
+                    <MicrophoneSelect
+                      agent={agent}
+                      helperText="Select microphone"
+                      className="w-full rounded-md border border-neutral-800 bg-neutral-950/60 px-3 py-2 text-sm text-white focus:outline-none focus:ring-2 focus:ring-emerald-500/60"
+                      containerClassName="space-y-1"
+                    />
+                  </div>
+                )}
+
+                {/* Conversation */}
+                <div className="flex-1 min-h-0">
+                  <div className="mb-2 text-sm text-neutral-400">Conversation</div>
+                  <div
+                    ref={listRef}
+                    className="h-64 lg:h-80 w-full overflow-y-auto rounded-md border border-neutral-900 bg-neutral-950/40 p-3 text-sm"
+                  >
+                    {messages.length === 0 ? (
+                      <div className="text-neutral-500">
+                        {selectedNpc
+                          ? `Connecting to ${selectedNpc.name}...`
+                          : 'No conversation yet. Talk to a villager to begin!'}
+                      </div>
+                    ) : (
+                      messages.map((message, index) => (
+                        <div key={`${message.turnId ?? message.role}-${index}`} className="mb-3 leading-relaxed">
+                          <span
+                            className="text-sm font-medium"
+                            style={{
+                              color: message.role === 'assistant' && selectedNpc ? selectedNpc.color : '#9ca3af'
+                            }}
+                          >
+                            {getRoleLabel(message.role)}:
+                          </span>{' '}
+                          <span className="whitespace-pre-wrap text-neutral-100">
+                            {message.role === 'user' && message.chunks?.length
+                              ? message.chunks.map((chunk) => <span key={chunk.counter}>{chunk.text}</span>)
+                              : message.text}
+                          </span>
+                        </div>
+                      ))
+                    )}
+                  </div>
+                </div>
+              </section>
             </div>
-          </section>
+
+            {/* Instructions */}
+            <footer className="mt-6 text-center text-sm text-neutral-500">
+              <p>Use <kbd className="px-2 py-1 bg-neutral-800 rounded text-neutral-300">WASD</kbd> or <kbd className="px-2 py-1 bg-neutral-800 rounded text-neutral-300">Arrow Keys</kbd> to move around the village.</p>
+              <p className="mt-1">Press <kbd className="px-2 py-1 bg-neutral-800 rounded text-neutral-300">SPACE</kbd> near a villager to start a voice conversation.</p>
+            </footer>
+          </div>
         </div>
       );
     }
 
-    return VoiceAgentDemo;
+    return Game;
   },
   { ssr: false }
 );
 
-export default Page;
+export default GamePage;

@@ -4,7 +4,7 @@ import { createOpenAI } from '@ai-sdk/openai';
 import { streamText, UIMessage, convertToModelMessages, AssistantModelMessage } from 'ai';
 import { streamResponse, verifySignature } from '@layercode/node-server-sdk';
 import { kv } from '@vercel/kv';
-import config from '@/layercode.config.json';
+import { getNPC, NPCs } from '@/app/game/npcs';
 
 type LayercodeMetadata = {
   conversation_id: string;
@@ -16,24 +16,31 @@ type LayercodePart = {
 
 type LayercodeUIMessage = UIMessage<LayercodeMetadata, LayercodePart>;
 
+type SessionContext = {
+  npc_id?: string;
+};
+
 type WebhookRequest = {
   conversation_id: string;
   text: string;
   turn_id: string;
   type: 'message' | 'session.start' | 'session.end' | 'session.update';
+  session_context?: SessionContext;
 };
 
-const SYSTEM_PROMPT = config.prompt;
-const WELCOME_MESSAGE = config.welcome_message;
+const DEFAULT_NPC_ID = 'elder_oak';
+const DEFAULT_NPC = NPCs[DEFAULT_NPC_ID];
 
 const openai = createOpenAI({ apiKey: process.env.OPENAI_API_KEY! });
 
 const CONVERSATION_TTL_SECONDS = 60 * 60 * 12; // 12 hours
 const isKvConfigured = Boolean(process.env.KV_REST_API_URL && process.env.KV_REST_API_TOKEN);
 const inMemoryConversations = new Map<string, LayercodeUIMessage[]>();
+const inMemoryNpcMapping = new Map<string, string>();
 let kvWarningShown = false;
 
 const conversationKey = (conversationId: string) => `layercode:conversation:${conversationId}`;
+const npcKey = (conversationId: string) => `layercode:npc:${conversationId}`;
 
 const warnAboutKvFallback = () => {
   if (isKvConfigured || kvWarningShown) return;
@@ -74,6 +81,24 @@ const resetConversationMessages = async (conversationId: string) => {
   await kv.del(conversationKey(conversationId));
 };
 
+const setConversationNpc = async (conversationId: string, npcId: string) => {
+  if (!isKvConfigured) {
+    warnAboutKvFallback();
+    inMemoryNpcMapping.set(conversationId, npcId);
+    return;
+  }
+  await kv.set(npcKey(conversationId), npcId, { ex: CONVERSATION_TTL_SECONDS });
+};
+
+const getConversationNpc = async (conversationId: string): Promise<string> => {
+  if (!isKvConfigured) {
+    warnAboutKvFallback();
+    return inMemoryNpcMapping.get(conversationId) ?? DEFAULT_NPC_ID;
+  }
+  const stored = await kv.get<string>(npcKey(conversationId));
+  return stored ?? DEFAULT_NPC_ID;
+};
+
 export const POST = async (request: Request) => {
   const requestBody = (await request.json()) as WebhookRequest;
   console.log('Webhook received from Layercode', requestBody);
@@ -88,11 +113,25 @@ export const POST = async (request: Request) => {
   });
   if (!isValid) return new Response('Invalid layercode-signature', { status: 401 });
 
-  const { conversation_id, text: userText, turn_id, type } = requestBody;
+  const { conversation_id, text: userText, turn_id, type, session_context } = requestBody;
+
+  // Get NPC ID from session context or stored mapping
+  let npcId = session_context?.npc_id;
 
   if (type === 'session.start') {
     await resetConversationMessages(conversation_id);
+    if (npcId) {
+      await setConversationNpc(conversation_id, npcId);
+    }
   }
+
+  // If no NPC ID in session context, get from storage
+  if (!npcId) {
+    npcId = await getConversationNpc(conversation_id);
+  }
+
+  const npc = getNPC(npcId) ?? DEFAULT_NPC;
+  console.log(`Using NPC: ${npc.name} (${npc.id})`);
 
   const existingMessages = await getConversationMessages(conversation_id);
 
@@ -110,12 +149,12 @@ export const POST = async (request: Request) => {
         id: turn_id,
         role: 'assistant',
         metadata: { conversation_id },
-        parts: [{ type: 'text', text: WELCOME_MESSAGE }]
+        parts: [{ type: 'text', text: npc.welcomeMessage }]
       };
 
       return streamResponse(requestBody, async ({ stream }) => {
         await appendConversationMessages(conversation_id, [message]);
-        stream.tts(WELCOME_MESSAGE);
+        stream.tts(npc.welcomeMessage);
         stream.end();
       });
 
@@ -125,14 +164,14 @@ export const POST = async (request: Request) => {
 
         const { textStream } = streamText({
           model: openai('gpt-4o-mini'),
-          system: SYSTEM_PROMPT,
+          system: npc.systemPrompt,
           messages: convertToModelMessages(conversationForModel),
           onFinish: async ({ response }) => {
             const generatedMessages: LayercodeUIMessage[] = response.messages
               .filter((message): message is AssistantModelMessage => message.role === 'assistant')
               .map((message) => ({
                 id: crypto.randomUUID(),
-                role: 'assistant', // now the type matches your UI message union
+                role: 'assistant',
                 metadata: { conversation_id },
                 parts: Array.isArray(message.content)
                   ? message.content.filter((part): part is { type: 'text'; text: string } => part.type === 'text').map((part) => ({ type: 'text', text: part.text }))

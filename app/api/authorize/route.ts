@@ -2,7 +2,6 @@ export const dynamic = "force-dynamic";
 import { NextResponse } from "next/server";
 
 export const POST = async (request: Request) => {
-  // Here you could do any user authorization checks you need for your app
   const endpoint = "https://api.layercode.com/v1/agents/web/authorize_session";
   const apiKey = process.env.LAYERCODE_API_KEY;
   if (!apiKey) {
@@ -12,6 +11,16 @@ export const POST = async (request: Request) => {
   if (!requestBody || !requestBody.agent_id) {
     throw new Error("Missing agent_id in request body.");
   }
+
+  // Pass through npcId in session_context if provided
+  const bodyToSend = {
+    ...requestBody,
+    session_context: {
+      ...(requestBody.session_context || {}),
+      npc_id: requestBody.npc_id || 'elder_oak'
+    }
+  };
+
   try {
     const response = await fetch(endpoint, {
       method: "POST",
@@ -19,7 +28,7 @@ export const POST = async (request: Request) => {
         "Content-Type": "application/json",
         Authorization: `Bearer ${apiKey}`,
       },
-      body: JSON.stringify(requestBody),
+      body: JSON.stringify(bodyToSend),
     });
     if (!response.ok) {
       const text = await response.text();
@@ -29,7 +38,6 @@ export const POST = async (request: Request) => {
   } catch (error: any) {
     console.log("Layercode authorize session response error:", error.message);
 
-    // Check if the error is an insufficient balance error
     if (error.message && error.message.includes('insufficient_balance')) {
       return NextResponse.json(
         { error: 'insufficient_balance' },
