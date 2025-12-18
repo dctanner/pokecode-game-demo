@@ -28,8 +28,6 @@ type WebhookRequest = {
   type: 'message' | 'session.start' | 'session.end' | 'session.update';
   // Layercode includes metadata from authorize_session in webhook payloads
   metadata?: CustomMetadata;
-  // Alternative field name - check both
-  session_context?: CustomMetadata;
 };
 
 const DEFAULT_NPC_ID = 'elder_oak';
@@ -117,10 +115,10 @@ export const POST = async (request: Request) => {
   });
   if (!isValid) return new Response('Invalid layercode-signature', { status: 401 });
 
-  const { conversation_id, text: userText, turn_id, type, metadata, session_context } = requestBody;
+  const { conversation_id, text: userText, turn_id, type, metadata } = requestBody;
 
-  // Get NPC ID from metadata (check both possible field names)
-  let npcId = metadata?.npc_id ?? session_context?.npc_id;
+  // Get NPC ID from metadata passed during authorize_session
+  let npcId = metadata?.npc_id;
   console.log('NPC ID from webhook payload:', npcId);
 
   if (type === 'session.start') {
