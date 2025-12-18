@@ -16,7 +16,8 @@ type LayercodePart = {
 
 type LayercodeUIMessage = UIMessage<LayercodeMetadata, LayercodePart>;
 
-type SessionContext = {
+// Metadata passed from client during authorize_session
+type CustomMetadata = {
   npc_id?: string;
 };
 
@@ -25,7 +26,10 @@ type WebhookRequest = {
   text: string;
   turn_id: string;
   type: 'message' | 'session.start' | 'session.end' | 'session.update';
-  session_context?: SessionContext;
+  // Layercode includes metadata from authorize_session in webhook payloads
+  metadata?: CustomMetadata;
+  // Alternative field name - check both
+  session_context?: CustomMetadata;
 };
 
 const DEFAULT_NPC_ID = 'elder_oak';
@@ -101,7 +105,7 @@ const getConversationNpc = async (conversationId: string): Promise<string> => {
 
 export const POST = async (request: Request) => {
   const requestBody = (await request.json()) as WebhookRequest;
-  console.log('Webhook received from Layercode', requestBody);
+  console.log('Webhook received from Layercode:', JSON.stringify(requestBody, null, 2));
 
   // Verify webhook signature
   const signature = request.headers.get('layercode-signature') || '';
@@ -113,21 +117,24 @@ export const POST = async (request: Request) => {
   });
   if (!isValid) return new Response('Invalid layercode-signature', { status: 401 });
 
-  const { conversation_id, text: userText, turn_id, type, session_context } = requestBody;
+  const { conversation_id, text: userText, turn_id, type, metadata, session_context } = requestBody;
 
-  // Get NPC ID from session context or stored mapping
-  let npcId = session_context?.npc_id;
+  // Get NPC ID from metadata (check both possible field names)
+  let npcId = metadata?.npc_id ?? session_context?.npc_id;
+  console.log('NPC ID from webhook payload:', npcId);
 
   if (type === 'session.start') {
     await resetConversationMessages(conversation_id);
     if (npcId) {
       await setConversationNpc(conversation_id, npcId);
+      console.log(`Stored NPC ID ${npcId} for conversation ${conversation_id}`);
     }
   }
 
-  // If no NPC ID in session context, get from storage
+  // If no NPC ID in webhook payload, get from storage
   if (!npcId) {
     npcId = await getConversationNpc(conversation_id);
+    console.log('NPC ID from storage:', npcId);
   }
 
   const npc = getNPC(npcId) ?? DEFAULT_NPC;

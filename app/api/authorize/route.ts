@@ -7,19 +7,15 @@ export const POST = async (request: Request) => {
   if (!apiKey) {
     throw new Error("LAYERCODE_API_KEY is not set.");
   }
+
   const requestBody = await request.json();
   if (!requestBody || !requestBody.agent_id) {
     throw new Error("Missing agent_id in request body.");
   }
 
-  // Pass through npcId in session_context if provided
-  const bodyToSend = {
-    ...requestBody,
-    session_context: {
-      ...(requestBody.session_context || {}),
-      npc_id: requestBody.npc_id || 'elder_oak'
-    }
-  };
+  // The SDK sends: { agent_id, metadata, sdk_version, conversation_id }
+  // We forward this to Layercode, which will include metadata in webhook payloads
+  console.log("Authorize request with metadata:", requestBody.metadata);
 
   try {
     const response = await fetch(endpoint, {
@@ -28,12 +24,14 @@ export const POST = async (request: Request) => {
         "Content-Type": "application/json",
         Authorization: `Bearer ${apiKey}`,
       },
-      body: JSON.stringify(bodyToSend),
+      body: JSON.stringify(requestBody),
     });
+
     if (!response.ok) {
       const text = await response.text();
       throw new Error(text || response.statusText);
     }
+
     return NextResponse.json(await response.json());
   } catch (error: any) {
     console.log("Layercode authorize session response error:", error.message);
